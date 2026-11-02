@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+
 import '../theme.dart';
 import '../widgets.dart';
 import '../db/db.dart';
 
 /// Layar "Tambah karyawan" (prototaip Figma) — simpan ke SQLite.
 class TambahKaryawanScreen extends StatefulWidget {
-  const TambahKaryawanScreen({super.key});
+  const TambahKaryawanScreen({super.key, this.employee});
+
+  final Map<String, Object?>? employee;
 
   @override
   State<TambahKaryawanScreen> createState() => _TambahKaryawanScreenState();
@@ -21,14 +24,43 @@ class _TambahKaryawanScreenState extends State<TambahKaryawanScreen> {
   String departemen = 'SDM';
   String jabatan = 'Staf HR';
   String jadwal = 'Regular - Senin-Jumat';
-  String mulaiBekerja = '28 Okt 2024';
+  String mulaiBekerja = _formatDate(DateTime.now());
   String peran = 'Karyawan';
+  String statusKaryawan = 'Aktif';
 
   bool _saving = false;
 
-  static const _departemenList = ['SDM', 'Finance', 'Engineering', 'Marketing', 'Operasional', 'Design'];
+  static const _departemenList = [
+    'SDM',
+    'Finance',
+    'Engineering',
+    'Marketing',
+    'Operasional',
+    'Design',
+  ];
   static const _peranList = ['Karyawan', 'Manager Divisi', 'HR', 'Admin'];
-  static const _jadwalList = ['Regular - Senin-Jumat', 'Shift - 3 hari kerja', 'Flexi - hasil oriented'];
+  static const _jadwalList = [
+    'Regular - Senin-Jumat',
+    'Shift - 3 hari kerja',
+    'Flexi - hasil oriented',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    final employee = widget.employee;
+    if (employee == null) return;
+    nama.text = employee['nama'] as String;
+    nip.text = employee['nip'] as String;
+    email.text = employee['email'] as String;
+    cuti.text = '${employee['alokasiCuti']}';
+    departemen = employee['departemen'] as String;
+    jabatan = employee['jabatan'] as String;
+    jadwal = employee['jadwal'] as String;
+    mulaiBekerja = employee['mulaiBekerja'] as String;
+    peran = employee['peran'] as String;
+    statusKaryawan = employee['statusKaryawan'] as String? ?? 'Aktif';
+  }
 
   @override
   void dispose() {
@@ -48,45 +80,98 @@ class _TambahKaryawanScreenState extends State<TambahKaryawanScreen> {
       lastDate: DateTime(now.year + 2),
     );
     if (d != null) {
-      setState(() => mulaiBekerja =
-          '${d.day} ${_bulan[d.month - 1]} ${d.year}');
+      setState(
+        () => mulaiBekerja = '${d.day} ${_bulan[d.month - 1]} ${d.year}',
+      );
     }
   }
 
   static const _bulan = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun',
-    'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des',
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'Mei',
+    'Jun',
+    'Jul',
+    'Agu',
+    'Sep',
+    'Okt',
+    'Nov',
+    'Des',
   ];
+
+  static String _formatDate(DateTime date) =>
+      '${date.day} ${_bulan[date.month - 1]} ${date.year}';
 
   Future<void> _save() async {
     if (!_form.currentState!.validate()) return;
     setState(() => _saving = true);
     try {
-      if (await Db.nipExists(nip.text.trim())) {
+      final existing = widget.employee;
+      if (existing == null && await Db.nipExists(nip.text.trim())) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('NIP ${nip.text.trim()} sudah dipakai karyawan lain')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'NIP ${nip.text.trim()} sudah dipakai karyawan lain',
+              ),
+            ),
+          );
         }
         return;
       }
-      await Db.insertKaryawan({
+      if (existing == null && await Db.emailExists(email.text.trim())) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Email sudah digunakan karyawan lain'),
+            ),
+          );
+        }
+        return;
+      }
+      final data = <String, Object?>{
         'nama': nama.text.trim(),
-        'nip': nip.text.trim(),
         'email': email.text.trim(),
         'departemen': departemen,
-        'jabatan': jabatan,
+        'jabatan': jabatan.trim(),
         'jadwal': jadwal,
         'mulaiBekerja': mulaiBekerja,
         'peran': peran,
-        'alokasiCuti': int.tryParse(cuti.text.trim()) ?? 0,
-        'wajahLengkap': 0,
-        'createdAt': DateTime.now().toIso8601String(),
-      });
-      await Db.registerUser(nip.text.trim(), 'karyawan123', 'Karyawan');
+        'statusKaryawan': statusKaryawan,
+        'alokasiCuti': int.parse(cuti.text.trim()),
+        'wajahLengkap': existing?['wajahLengkap'] ?? 0,
+      };
+      if (existing == null) {
+        await Db.buatKaryawan(
+          karyawan: {
+            ...data,
+            'nip': nip.text.trim(),
+            'createdAt': DateTime.now().toIso8601String(),
+          },
+          password: 'karyawan123',
+        );
+      } else {
+        await Db.updateKaryawan(nip: existing['nip'] as String, data: data);
+      }
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Karyawan tersimpan + undangan terkirim (dummy)')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              existing == null
+                  ? 'Akun tersimpan. Kata sandi awal: karyawan123 (ubah setelah masuk).'
+                  : 'Perubahan data karyawan berhasil disimpan.',
+            ),
+          ),
+        );
         Navigator.of(context).pop(true);
+      }
+    } on Exception catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Karyawan gagal disimpan: $error')),
+        );
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -105,10 +190,17 @@ class _TambahKaryawanScreenState extends State<TambahKaryawanScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const SizedBox(height: 8),
-                const ScreenHeader(
-                  title: 'Tambah karyawan',
-                  subtitle: 'Akun baru - Semua kolom wajib diisi',
-                  action: RoundIconButton(Icons.close),
+                ScreenHeader(
+                  title: widget.employee == null
+                      ? 'Tambah karyawan'
+                      : 'Edit karyawan',
+                  subtitle: widget.employee == null
+                      ? 'Akun baru - Semua kolom wajib diisi'
+                      : 'Perbarui data dan akses karyawan',
+                  action: RoundIconButton(
+                    Icons.close,
+                    onTap: () => Navigator.of(context).maybePop(),
+                  ),
                 ),
                 const _SectionTitle('Identitas karyawan'),
                 _Label('Nama lengkap'),
@@ -123,6 +215,7 @@ class _TambahKaryawanScreenState extends State<TambahKaryawanScreen> {
                 TextFormField(
                   controller: nip,
                   keyboardType: TextInputType.number,
+                  readOnly: widget.employee != null,
                   decoration: _dec('Nomor Induk Pegawai'),
                   validator: (v) =>
                       (v == null || v.trim().isEmpty) ? 'Wajib diisi' : null,
@@ -136,7 +229,9 @@ class _TambahKaryawanScreenState extends State<TambahKaryawanScreen> {
                   validator: (v) {
                     final s = v?.trim() ?? '';
                     if (s.isEmpty) return 'Wajib diisi';
-                    if (!s.contains('@')) return 'Format email tidak valid';
+                    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(s)) {
+                      return 'Format email tidak valid';
+                    }
                     return null;
                   },
                 ),
@@ -181,7 +276,14 @@ class _TambahKaryawanScreenState extends State<TambahKaryawanScreen> {
                   onChanged: (v) => setState(() => peran = v!),
                 ),
                 const SizedBox(height: 12),
-                _Label('Alokasi cuti 2024'),
+                _Label('Status karyawan'),
+                _DropdownPilihan(
+                  value: statusKaryawan,
+                  items: const ['Aktif', 'Nonaktif'],
+                  onChanged: (v) => setState(() => statusKaryawan = v!),
+                ),
+                const SizedBox(height: 12),
+                _Label('Alokasi cuti ${DateTime.now().year}'),
                 TextFormField(
                   controller: cuti,
                   keyboardType: TextInputType.number,
@@ -193,49 +295,73 @@ class _TambahKaryawanScreenState extends State<TambahKaryawanScreen> {
                   },
                 ),
                 const SizedBox(height: 6),
-                const Text('Alokasi awal prorata; dapat disesuaikan sesuai kebijakan perusahaan.',
-                    style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                const Text(
+                  'Alokasi awal prorata; dapat disesuaikan sesuai kebijakan perusahaan.',
+                  style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+                ),
                 const SizedBox(height: 20),
 
-                const _SectionTitle('Undangan & aktivasi'),
-                AppCard(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: const [
-                      Row(
-                        children: [
-                          Icon(Icons.mark_email_read_outlined, size: 18, color: AppColors.primary),
-                          SizedBox(width: 8),
-                          Expanded(
-                            child: Text('Kirim undangan lewat email',
+                if (widget.employee == null) ...[
+                  const _SectionTitle('Akun & aktivasi'),
+                  AppCard(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: const [
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.mark_email_read_outlined,
+                              size: 18,
+                              color: AppColors.primary,
+                            ),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Akun dibuat di perangkat ini',
                                 style: TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 13,
-                                    color: AppColors.textDark)),
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
+                                  color: AppColors.textDark,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        SizedBox(height: 6),
+                        Text(
+                          'Email undangan belum dikirim. Kata sandi awal akun adalah karyawan123.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textMuted,
                           ),
-                        ],
-                      ),
-                      SizedBox(height: 6),
-                      Text('Tautan aktivasi berlaku 72 jam. Karyawan membuat kata sandi sendiri.',
-                          style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
-                      SizedBox(height: 10),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(Icons.face_retouching_natural, size: 18, color: AppColors.primary),
-                          SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                                'Setelah akun diaktifkan, karyawan wajib registrasi wajah '
-                                'di aplikasi sebelum dapat presensi. Admin tidak mengunggah data wajah.',
-                                style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
-                          ),
-                        ],
-                      ),
-                    ],
+                        ),
+                        SizedBox(height: 10),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              size: 18,
+                              color: AppColors.primary,
+                            ),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Karyawan dapat masuk dengan NIP dan kata sandi awal. '
+                                'Pengiriman email memerlukan layanan email perusahaan.',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: AppColors.textMuted,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+                ],
                 const SizedBox(height: 24),
                 SizedBox(
                   width: double.infinity,
@@ -247,11 +373,17 @@ class _TambahKaryawanScreenState extends State<TambahKaryawanScreen> {
                           style: OutlinedButton.styleFrom(
                             minimumSize: const Size.fromHeight(52),
                             side: const BorderSide(color: AppColors.border),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
                           ),
-                          child: const Text('Batal',
-                              style: TextStyle(
-                                  color: AppColors.textDark, fontWeight: FontWeight.w700)),
+                          child: const Text(
+                            'Batal',
+                            style: TextStyle(
+                              color: AppColors.textDark,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -264,9 +396,16 @@ class _TambahKaryawanScreenState extends State<TambahKaryawanScreen> {
                                   width: 18,
                                   height: 18,
                                   child: CircularProgressIndicator(
-                                      strokeWidth: 2, color: Colors.white))
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
                               : const Icon(Icons.send, size: 18),
-                          label: const Text('Simpan & kirim undangan'),
+                          label: Text(
+                            widget.employee == null
+                                ? 'Simpan karyawan'
+                                : 'Simpan perubahan',
+                          ),
                         ),
                       ),
                     ],
@@ -292,9 +431,14 @@ class _SectionTitle extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(top: 8, bottom: 12),
-      child: Text(text,
-          style: const TextStyle(
-              fontSize: 16, fontWeight: FontWeight.w700, color: AppColors.textDark)),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w700,
+          color: AppColors.textDark,
+        ),
+      ),
     );
   }
 }
@@ -307,9 +451,14 @@ class _Label extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
-      child: Text(text,
-          style: const TextStyle(
-              fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textMuted)),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: AppColors.textMuted,
+        ),
+      ),
     );
   }
 }
@@ -339,7 +488,10 @@ class _DropdownPilihan extends StatelessWidget {
         initialValue: value,
         items: [
           for (final it in items)
-            DropdownMenuItem(value: it, child: Text(it, style: const TextStyle(fontSize: 14))),
+            DropdownMenuItem(
+              value: it,
+              child: Text(it, style: const TextStyle(fontSize: 14)),
+            ),
         ],
         onChanged: onChanged,
         decoration: const InputDecoration(

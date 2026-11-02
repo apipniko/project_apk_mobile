@@ -130,7 +130,15 @@ class DropdownField extends StatelessWidget {
 /// Search bar bulat putih.
 class SearchField extends StatelessWidget {
   final String hint;
-  const SearchField({super.key, required this.hint});
+  final TextEditingController? controller;
+  final ValueChanged<String>? onChanged;
+
+  const SearchField({
+    super.key,
+    required this.hint,
+    this.controller,
+    this.onChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -148,6 +156,8 @@ class SearchField extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: TextField(
+              controller: controller,
+              onChanged: onChanged,
               decoration: InputDecoration(
                 hintText: hint,
                 border: InputBorder.none,

@@ -1,19 +1,34 @@
 import 'package:flutter/material.dart';
+
+import '../db/db.dart';
 import '../theme.dart';
 import '../widgets.dart';
-import '../data_dummy.dart';
-import '../db/db.dart';
+import 'tambah_karyawan.dart';
 
-/// Layar "Kelola karyawan" \u2014 daftar dari SQLite + data contoh prototaip.
 class KelolaKaryawanScreen extends StatefulWidget {
-  const KelolaKaryawanScreen({super.key});
+  const KelolaKaryawanScreen({
+    super.key,
+    this.canDelete = true,
+    this.canEdit = true,
+    this.managerNip,
+    this.currentActorNip,
+  });
+
+  final bool canDelete;
+  final bool canEdit;
+  final String? managerNip;
+  final String? currentActorNip;
 
   @override
   State<KelolaKaryawanScreen> createState() => _KelolaKaryawanScreenState();
 }
 
 class _KelolaKaryawanScreenState extends State<KelolaKaryawanScreen> {
-  late Future<List<Map<String, Object?>>> _future;
+  final _search = TextEditingController();
+  late Future<_EmployeeListData> _future;
+  String _department = 'Semua divisi';
+  String _status = 'Semua status';
+  String _employmentStatus = 'Semua status karyawan';
 
   @override
   void initState() {
@@ -21,50 +36,57 @@ class _KelolaKaryawanScreenState extends State<KelolaKaryawanScreen> {
     _future = _load();
   }
 
-  void _reload() => setState(() => _future = _load());
-
-  Future<List<Map<String, Object?>>> _load() async {
-    final dbRows = await Db.allKaryawan();
-    final dariDb = dbRows.map((r) => {
-          'id': r['id'],
-          'nama': r['nama'],
-          'nip': r['nip'],
-          'departemen': r['departemen'],
-          'jabatan': r['jabatan'],
-          'peran': r['peran'],
-          'wajahLengkap': (r['wajahLengkap'] as int) == 1,
-          'dariDb': true,
-        }).toList();
-    final contoh = karyawanList.map((k) => {
-          'id': null,
-          'nama': k.nama,
-          'nip': k.nip,
-          'departemen': k.departemen,
-          'jabatan': k.jabatan,
-          'peran': 'Karyawan',
-          'wajahLengkap': k.wajahLengkap,
-          'dariDb': false,
-          'status': k.status,
-          'telatMenit': k.telatMenit,
-        }).toList();
-    return [...dariDb, ...contoh];
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
   }
 
-  Future<void> _hapus(Map<String, Object?> k) async {
-    final id = k['id'] as int?;
-    if (id == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Data contoh prototaip tidak bisa dihapus')));
-      _reload();
-      return;
+  Future<_EmployeeListData> _load() async {
+    final results = await Future.wait([
+      Db.allKaryawan(),
+      Db.availableDepartments(),
+    ]);
+    var employees = results[0];
+    var departments = results[1]
+        .map((row) => row['departemen'] as String)
+        .toList();
+    if (widget.managerNip != null) {
+      final manager = await Db.karyawanByNip(widget.managerNip!);
+      final department = manager?['departemen'];
+      employees = employees
+          .where((row) => department != null && row['departemen'] == department)
+          .toList();
+      departments = department == null ? [] : [department as String];
     }
+    return _EmployeeListData(employees: employees, departments: departments);
+  }
+
+  void _reload() => setState(() => _future = _load());
+
+  Future<void> _edit(Map<String, Object?> employee) async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => TambahKaryawanScreen(employee: employee),
+      ),
+    );
+    if (changed == true && mounted) _reload();
+  }
+
+  Future<void> _hapus(Map<String, Object?> employee) async {
+    final id = employee['id'] as int;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: Text('Hapus ${k['nama']}?'),
-        content: const Text('Data akan dihapus permanen dari database.'),
+      builder: (context) => AlertDialog(
+        title: Text('Hapus ${employee['nama']}?'),
+        content: const Text(
+          'Akun, riwayat presensi, dan pengajuan karyawan ini akan dihapus permanen.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Batal')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Batal'),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: AppColors.red),
             onPressed: () => Navigator.pop(context, true),
@@ -73,113 +95,304 @@ class _KelolaKaryawanScreenState extends State<KelolaKaryawanScreen> {
         ],
       ),
     );
-    if (ok == true) {
+    if (ok != true || !mounted) return;
+    try {
       await Db.deleteKaryawan(id);
+      if (!mounted) return;
       _reload();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Data karyawan berhasil dihapus.')),
+      );
+    } on Exception catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Data gagal dihapus: $error')));
+    }
+  }
+
+  Future<void> _ubahStatus(Map<String, Object?> employee) async {
+    final oldStatus = employee['statusKaryawan'] as String? ?? 'Aktif';
+    final newStatus = oldStatus == 'Aktif' ? 'Nonaktif' : 'Aktif';
+    if (newStatus == 'Nonaktif' && employee['nip'] == widget.currentActorNip) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Anda tidak dapat menonaktifkan akun sendiri.'),
+        ),
+      );
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          '${newStatus == 'Aktif' ? 'Aktifkan' : 'Nonaktifkan'} akun ${employee['nama']}?',
+        ),
+        content: Text(
+          newStatus == 'Nonaktif'
+              ? 'Karyawan tidak dapat masuk, mencatat presensi, atau mengajukan izin sampai akunnya diaktifkan kembali.'
+              : 'Karyawan akan dapat masuk dan menggunakan aplikasi kembali.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(newStatus),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await Db.setEmployeeStatus(
+        nip: employee['nip'] as String,
+        status: newStatus,
+      );
+      if (!mounted) return;
+      _reload();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Akun karyawan sekarang $newStatus.')),
+      );
+    } on Exception catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Status akun gagal diperbarui: $error')),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: FutureBuilder<List<Map<String, Object?>>>(
-          future: _future,
-          builder: (context, snap) {
-            final list = snap.data ?? const <Map<String, Object?>>[];
-            final terlambat =
-                list.where((k) => k['status'] == 'Terlambat').length;
-            return SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const SizedBox(height: 8),
-                  Row(
+    return FutureBuilder<_EmployeeListData>(
+      future: _future,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Center(
+            child: Text('Data karyawan gagal dimuat: ${snapshot.error}'),
+          );
+        }
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final data = snapshot.data!;
+        final query = _search.text.trim().toLowerCase();
+        final employees = data.employees.where((employee) {
+          final status = employee['statusPresensi'] as String? ?? 'Alpha';
+          final accountStatus =
+              employee['statusKaryawan'] as String? ?? 'Aktif';
+          final attendanceStatus = accountStatus == 'Nonaktif'
+              ? 'Akun nonaktif'
+              : status;
+          return (_department == 'Semua divisi' ||
+                  employee['departemen'] == _department) &&
+              (_employmentStatus == 'Semua status karyawan' ||
+                  accountStatus == _employmentStatus) &&
+              (_status == 'Semua status' || attendanceStatus == _status) &&
+              (query.isEmpty ||
+                  (employee['nama'] as String).toLowerCase().contains(query) ||
+                  (employee['nip'] as String).toLowerCase().contains(query));
+        }).toList();
+        final late = employees
+            .where((employee) => employee['statusPresensi'] == 'Terlambat')
+            .length;
+
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Kelola karyawan',
-                                style: TextStyle(
-                                    fontSize: 24,
-                                    fontWeight: FontWeight.w800,
-                                    color: AppColors.textDark)),
-                            SizedBox(height: 4),
-                            Text('Karyawan database + data contoh',
-                                style:
-                                    TextStyle(fontSize: 13, color: AppColors.textMuted)),
-                          ],
+                      Text(
+                        'Kelola karyawan',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textDark,
                         ),
                       ),
-                      RoundIconButton(Icons.refresh, onTap: _reload),
+                      SizedBox(height: 4),
+                      Text(
+                        'Direktori dan status presensi hari ini',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textMuted,
+                        ),
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  const SearchField(hint: 'Cari nama atau NIP karyawan'),
-                  const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('${list.length} karyawan',
-                          style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.textDark)),
-                      if (terlambat > 0)
-                        Text('$terlambat terlambat',
-                            style:
-                                const TextStyle(fontSize: 12, color: AppColors.amber)),
-                    ],
+                ),
+                RoundIconButton(Icons.refresh, onTap: _reload),
+              ],
+            ),
+            const SizedBox(height: 16),
+            SearchField(
+              hint: 'Cari nama atau NIP karyawan',
+              controller: _search,
+              onChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: 8),
+            _EmployeeDropdown(
+              value: _department,
+              options: ['Semua divisi', ...data.departments],
+              onChanged: (value) => setState(() => _department = value),
+            ),
+            const SizedBox(height: 8),
+            _EmployeeDropdown(
+              value: _employmentStatus,
+              options: const ['Semua status karyawan', 'Aktif', 'Nonaktif'],
+              onChanged: (value) => setState(() => _employmentStatus = value),
+            ),
+            const SizedBox(height: 8),
+            _EmployeeDropdown(
+              value: _status,
+              options: const [
+                'Semua status',
+                'Tepat Waktu',
+                'Terlambat',
+                'Izin',
+                'Belum presensi',
+                'Alpha',
+                'Tidak dijadwalkan',
+                'Akun nonaktif',
+              ],
+              onChanged: (value) => setState(() => _status = value),
+            ),
+            const SizedBox(height: 18),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  '${employees.length} karyawan',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textDark,
                   ),
-                  const SizedBox(height: 12),
-                  if (snap.connectionState == ConnectionState.waiting)
-                    const Padding(
-                      padding: EdgeInsets.all(32),
-                      child: Center(child: CircularProgressIndicator()),
-                    )
-                  else
-                    ...list.map((k) => _Tile(
-                          k: k,
-                          onDelete: () => _hapus(k),
-                        )),
-                  const SizedBox(height: 32),
-                ],
+                ),
+                if (late > 0)
+                  Text(
+                    '$late terlambat',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.amber,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (employees.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 28),
+                child: Center(
+                  child: Text(
+                    'Tidak ada karyawan yang cocok dengan filter.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+                  ),
+                ),
+              )
+            else
+              ...employees.map(
+                (employee) => _EmployeeTile(
+                  employee: employee,
+                  canDelete: widget.canDelete,
+                  canEdit: widget.canEdit,
+                  onToggleStatus: () => _ubahStatus(employee),
+                  onEdit: () => _edit(employee),
+                  onDelete: () => _hapus(employee),
+                ),
               ),
-            );
-          },
-        ),
-      ),
+          ],
+        );
+      },
     );
   }
 }
 
-class _Tile extends StatelessWidget {
-  final Map<String, Object?> k;
+class _EmployeeListData {
+  const _EmployeeListData({required this.employees, required this.departments});
+
+  final List<Map<String, Object?>> employees;
+  final List<String> departments;
+}
+
+class _EmployeeDropdown extends StatelessWidget {
+  const _EmployeeDropdown({
+    required this.value,
+    required this.options,
+    required this.onChanged,
+  });
+
+  final String value;
+  final List<String> options;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    height: 46,
+    padding: const EdgeInsets.symmetric(horizontal: 14),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: AppColors.border),
+    ),
+    child: DropdownButtonHideUnderline(
+      child: DropdownButton<String>(
+        value: value,
+        isExpanded: true,
+        items: options
+            .map(
+              (option) => DropdownMenuItem(
+                value: option,
+                child: Text(option, style: const TextStyle(fontSize: 13)),
+              ),
+            )
+            .toList(),
+        onChanged: (value) {
+          if (value != null) onChanged(value);
+        },
+      ),
+    ),
+  );
+}
+
+class _EmployeeTile extends StatelessWidget {
+  const _EmployeeTile({
+    required this.employee,
+    required this.canDelete,
+    required this.canEdit,
+    required this.onToggleStatus,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final Map<String, Object?> employee;
+  final bool canDelete;
+  final bool canEdit;
+  final VoidCallback onToggleStatus;
+  final VoidCallback onEdit;
   final VoidCallback onDelete;
-  const _Tile({required this.k, required this.onDelete});
 
   @override
   Widget build(BuildContext context) {
-    final dariDb = k['dariDb'] as bool;
-    final Color statusColor;
-    final String statusText;
-    if (dariDb) {
-      statusColor = AppColors.blue;
-      statusText = (k['wajahLengkap'] as bool)
-          ? 'Registrasi wajah lengkap'
-          : 'Menunggu registrasi wajah';
-    } else if (k['status'] == 'Terlambat') {
-      statusColor = AppColors.amber;
-      statusText = 'Terlambat ${k['telatMenit']} menit';
-    } else if (k['status'] == 'Tepat Waktu') {
-      statusColor = AppColors.green;
-      statusText = 'Tepat Waktu';
-    } else {
-      statusColor = AppColors.textMuted;
-      statusText = 'Tidak ada catatan presensi';
-    }
+    final accountStatus = employee['statusKaryawan'] as String? ?? 'Aktif';
+    final status = accountStatus == 'Nonaktif'
+        ? 'Akun nonaktif'
+        : employee['statusPresensi'] as String? ?? 'Alpha';
+    final statusColor = status == 'Tepat Waktu'
+        ? AppColors.green
+        : status == 'Terlambat'
+        ? AppColors.amber
+        : status == 'Izin'
+        ? AppColors.blue
+        : AppColors.textMuted;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: AppCard(
@@ -190,38 +403,93 @@ class _Tile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text('${k['nama']}',
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                                fontSize: 15,
-                                color: AppColors.textDark)),
-                      ),
-                      if (dariDb)
-                        const StatusChip('DB',
-                            bg: AppColors.mintChip, fg: AppColors.primary),
-                    ],
+                  Text(
+                    employee['nama'] as String,
+                    style: const TextStyle(
+                      color: AppColors.textDark,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                  const SizedBox(height: 2),
-                  Text('${k['jabatan']} - ${k['departemen']}',
-                      style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
-                  Text('NIP${k['nip']} - ${k['peran']}',
-                      style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                  const SizedBox(height: 3),
+                  Text(
+                    '${employee['jabatan']} · ${employee['departemen']}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+                  Text(
+                    'NIP ${employee['nip']} · ${employee['peran']}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  StatusChip(
+                    accountStatus,
+                    bg: accountStatus == 'Aktif'
+                        ? AppColors.mintChip
+                        : const Color(0xFFFDECEC),
+                    fg: accountStatus == 'Aktif'
+                        ? AppColors.primary
+                        : AppColors.red,
+                  ),
                   const SizedBox(height: 6),
-                  Text(statusText,
-                      style: TextStyle(
-                          fontSize: 12, color: statusColor, fontWeight: FontWeight.w600)),
+                  Text(
+                    status == 'Izin' ? 'Izin disetujui' : status,
+                    style: TextStyle(
+                      color: statusColor,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ],
               ),
             ),
-            IconButton(
-              onPressed: dariDb ? onDelete : null,
-              icon: Icon(Icons.delete_outline,
-                  size: 20,
-                  color: dariDb ? AppColors.red : AppColors.border),
-            ),
+            if (canEdit || canDelete)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (canEdit)
+                    IconButton(
+                      tooltip: accountStatus == 'Aktif'
+                          ? 'Nonaktifkan akun'
+                          : 'Aktifkan akun',
+                      onPressed: onToggleStatus,
+                      icon: Icon(
+                        accountStatus == 'Aktif'
+                            ? Icons.person_off_outlined
+                            : Icons.person_add_alt_1_outlined,
+                        size: 19,
+                        color: accountStatus == 'Aktif'
+                            ? AppColors.amber
+                            : AppColors.primary,
+                      ),
+                    ),
+                  if (canEdit)
+                    IconButton(
+                      tooltip: 'Edit data karyawan',
+                      onPressed: onEdit,
+                      icon: const Icon(
+                        Icons.edit_outlined,
+                        size: 19,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  if (canDelete)
+                    IconButton(
+                      tooltip: 'Hapus karyawan',
+                      onPressed: onDelete,
+                      icon: const Icon(
+                        Icons.delete_outline,
+                        size: 20,
+                        color: AppColors.red,
+                      ),
+                    ),
+                ],
+              ),
           ],
         ),
       ),
